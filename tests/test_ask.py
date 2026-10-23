@@ -64,3 +64,17 @@ def test_chat_loop_keeps_one_chat_session(monkeypatch, capsys):
     assert "reply to 最初の質問" in out
     assert "reply to 二つ目の質問" in out
     assert "input_tokens=20" in out
+
+def test_print_usage_includes_thoughts_and_total(capsys):
+    response = SimpleNamespace(
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=12,
+            candidates_token_count=4,
+            thoughts_token_count=30,
+            total_token_count=46,
+        )
+    )
+    ask_module.print_usage(response)
+    assert capsys.readouterr().out == (
+        "[usage] input_tokens=12 output_tokens=4 thoughts_tokens=30 total_tokens=46\n"
+    )
