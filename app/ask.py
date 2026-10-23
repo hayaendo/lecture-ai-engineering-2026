@@ -19,12 +19,9 @@ from app.config import MODEL, api_error_message, get_api_key
 
 # 講座に固有の質問。正しい答えは data/glossary.json の homework-levels にある
 DEFAULT_QUESTION = "AIE2026の講座の宿題にある「3レベル」とは何ですか？"
+EXIT_WORDS = ("", "exit", "quit")
 
-
-def ask(question: str) -> str:
-    client = genai.Client(api_key=get_api_key())
-    response = client.models.generate_content(model=MODEL, contents=question)
-
+def print_usage(response) -> None:
     usage = response.usage_metadata
     if usage is not None:
         print(
@@ -32,18 +29,60 @@ def ask(question: str) -> str:
             f"output_tokens={usage.candidates_token_count}"
         )
 
+
+def ask(question: str) -> str:
+    client = genai.Client(api_key=get_api_key())
+    response = client.models.generate_content(model=MODEL, contents=question)
+    print_usage(response)
     return response.text
+
+def chat_loop(first_question: str | None = None) -> None:
+    client = genai.Client(api_key = get_api_key())
+    chat = client.chats.create(model=MODEL)
+
+    print("会話モード（終了：exit/空行：Ctrl-D）\n")
+    pending = first_question
+    while True:
+        if pending is not None:
+            question, pending = pending, None
+            print(f"> {question}")
+        else:
+            try:
+                question = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+        if question.lower() in EXIT_WORDS:
+            break
+
+        try:
+            response = chat.send_message(question)
+        except errors.APIError as e:
+            print(api_error_message(e.code, e.message))
+            continue
+
+        print_usage(response)
+        print(f"{response.text}\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="素のLLMに質問する")
-    parser.add_argument("question", nargs="?", default=DEFAULT_QUESTION)
+    parser.add_argument("question", nargs="?", default=None)
+    parser.add_argument(
+        "-c", "--chat", action="store_true", help="会話履歴を保ったまま続けて質問する"
+    )
     args = parser.parse_args()
 
     print(f"[model] {MODEL}")
-    print(f"[質問] {args.question}\n")
+
+    if args.chat:
+        chat_loop(args.question)
+        return
+
+    question = args.question or DEFAULT_QUESTION
+    print(f"[質問] {question}\n")
     try:
-        print(ask(args.question))
+        print(ask(question))
     except errors.APIError as e:
         print(api_error_message(e.code, e.message))
         raise SystemExit(1)

@@ -46,6 +46,13 @@ uv run pytest -q
 ```bash
 uv run python -m app.ask "LoRAとは何ですか？"
 uv run python -m app.ask "AIE2026の講座の宿題にある「3レベル」とは何ですか？"
+uv run python -m app.ask --interactive
+```
+
+`--interactive` を付けると、質問を続けても同じ会話の履歴を保てます。`終了`、`exit`、`quit` のいずれかを入力すると終了します。最初の質問を引数で渡して始めることもできます。
+
+```bash
+uv run python -m app.ask --interactive "LoRAとは何ですか？"
 ```
 
 1つ目は一般的な用語なので、おおむね正しい答えが返ります。2つ目は講座に固有の「宿題の3レベル」について質問します。素のLLMは講座のことを知らないため、「分からない」と答えるか、一般論でもっともらしく答えます。正しい内容は `data/glossary.json` の `homework-levels` にあります。モデルの答えと比べてみましょう。
