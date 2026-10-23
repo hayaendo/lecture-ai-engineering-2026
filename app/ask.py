@@ -11,6 +11,7 @@
 """
 
 import argparse
+import time
 
 from google import genai
 from google.genai import errors
@@ -24,10 +25,21 @@ EXIT_WORDS = ("", "exit", "quit")
 def print_usage(response) -> None:
     usage = response.usage_metadata
     if usage is not None:
-        print(
+        line = (
             f"[usage] input_tokens={usage.prompt_token_count} "
             f"output_tokens={usage.candidates_token_count}"
         )
+
+        thoughts = getattr(usage, "thoughts_token_count", None)
+        if thoughts is not None:
+            line += f" thoughts_tokens={thoughts}"
+        total = getattr(usage, "total_token_count", None)
+        if total is not None:
+            line += f" total_tokens={total}"
+        print(line)
+
+def print_elapsed(seconds: float) -> None:
+    print(f"[time] {seconds:.2f}s")
 
 
 def ask(question: str) -> str:
@@ -56,11 +68,14 @@ def chat_loop(first_question: str | None = None) -> None:
             break
 
         try:
+            start = time.perf_counter()
             response = chat.send_message(question)
+            elapsed = time.perf_counter() - start
         except errors.APIError as e:
             print(api_error_message(e.code, e.message))
             continue
 
+        print_elapsed(elapsed)
         print_usage(response)
         print(f"{response.text}\n")
 
@@ -82,7 +97,10 @@ def main() -> None:
     question = args.question or DEFAULT_QUESTION
     print(f"[質問] {question}\n")
     try:
-        print(ask(question))
+        start = time.perf_counter()
+        answer = ask(question)
+        print_elapsed(time.perf_counter() - start)
+        print(answer)
     except errors.APIError as e:
         print(api_error_message(e.code, e.message))
         raise SystemExit(1)
