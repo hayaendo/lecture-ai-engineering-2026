@@ -20,7 +20,7 @@ from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
 from fastmcp import Client
 from pydantic_ai.mcp import MCPToolset, StdioTransport
-from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import DeferredToolRequests, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.google import GoogleProvider
@@ -38,10 +38,11 @@ INSTRUCTIONS = """\
 """
 
 # モデルは実行時に渡す（テストではAPIを呼ばない TestModel に差し替えるため）
-agent = Agent(instructions=INSTRUCTIONS)
+agent = Agent(instructions=INSTRUCTIONS, output_type=[str, DeferredToolRequests])
 agent.tool_plain(tools.search_glossary)
 agent.tool_plain(tools.get_lecture_summary)
 agent.tool_plain(tools.make_quiz)
+agent.tool_plain(tools.save_learning_log, requires_approval=True)
 
 # 第5回: 使う MCP サーバーの設定ファイル。Claude Desktop や Cursor と同じ "mcpServers" 形式
 MCP_CONFIG = Path(__file__).resolve().parent / "mcp_servers.json"
@@ -108,6 +109,30 @@ def print_trace(result) -> None:
     print(f"[usage] {result.usage}")
 
 
+def run_with_approval(target: Agent, question: str):
+    """承認が必要なツールを利用者に確認してから再開する。"""
+    result = target.run_sync(question, model=build_model())
+    while isinstance(result.output, DeferredToolRequests):
+        requests = result.output
+        if requests.calls:
+            raise RuntimeError("未対応の外部ツール要求があります。")
+
+        approvals = {}
+        for call in requests.approvals:
+            print(f"[approval] {call.tool_name}({call.args})")
+            answer = input("実行を許可しますか？ [y/N]: ").strip().lower()
+            approvals[call.tool_call_id] = answer in {"y", "yes"}
+
+        result = target.run_sync(
+            None,
+            model=build_model(),
+            message_history=result.all_messages(),
+            deferred_tool_results=requests.build_results(approvals=approvals),
+            usage=result.usage,
+        )
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="学習支援エージェントに質問する")
     parser.add_argument("question", nargs="?")
@@ -127,7 +152,11 @@ def main() -> None:
     if args.mcp:
         print("[tools] MCP サーバー（app/mcp_servers.json）")
     try:
-        result = target.run_sync(args.question, model=build_model())
+        result = (
+            target.run_sync(args.question, model=build_model())
+            if args.mcp
+            else run_with_approval(target, args.question)
+        )
     except ModelHTTPError as e:
         print(api_error_message(e.status_code, str(e.body)[:200]))
         raise SystemExit(1)
