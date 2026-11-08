@@ -39,6 +39,43 @@ def test_lecture_summary():
     assert "まだありません" in tools.get_lecture_summary(99)
 
 
+def test_make_quiz_selects_a_term_from_the_requested_lecture(monkeypatch):
+    terms = [term for term in tools.load_glossary() if term["lecture"] == 2]
+    selected = terms[0]
+    monkeypatch.setattr(tools.random, "choice", lambda choices: choices[0])
+
+    result = tools.make_quiz(2)
+
+    assert f"「{selected['term']}」の意味は？" in result
+    assert selected["definition"] in result
+
+
+def test_make_quiz_reports_when_lecture_has_no_terms():
+    assert "第99回の用語は用語集にありません" in tools.make_quiz(99)
+
+
+def test_save_learning_log_appends_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "LEARNING_LOG_DIR", tmp_path)
+
+    first_result = tools.save_learning_log("  RAG の仕組みを学んだ。  ")
+    second_result = tools.save_learning_log("検索結果を使って回答を生成する。")
+
+    log = (tmp_path / "learning_log.md").read_text(encoding="utf-8")
+    assert "RAG の仕組みを学んだ。" in log
+    assert "検索結果を使って回答を生成する。" in log
+    assert first_result.startswith("学習記録を ")
+    assert second_result.startswith("学習記録を ")
+
+
+def test_save_learning_log_does_not_save_empty_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "LEARNING_LOG_DIR", tmp_path)
+
+    result = tools.save_learning_log("  \n ")
+
+    assert "内容を入力してください" in result
+    assert not (tmp_path / "learning_log.md").exists()
+
+
 def test_default_question_of_lecture1_is_answerable_from_glossary():
     """第1回の既定の質問（app.ask）は、第3回のエージェントが用語集で正しく答えられること。"""
     from app.ask import DEFAULT_QUESTION
