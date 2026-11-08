@@ -17,7 +17,7 @@
 
 ## 宿題
 
-- 取り組んだレベル：基礎 / 実装 / 発展
+- 取り組んだレベル：基礎・実装・発展
 - やったこと：
   - 基礎：同じ質問「LoRAとQLoRAの違いは？」を `--trace` 付きで、変更前・実験1・実験2 の3通り実行した。
     - 実験1：agent.pyのINSTRUCTIONSから「- 用語や講座に固有のことを答える前に、必ず search_glossary で用語集を確認する。」を削除
@@ -28,6 +28,9 @@
       - agent.tool_plain(tools.save_learning_log, requires_approval=True)で登録
       - 承認待ちで止まったときの結果を受け取れるよう、output_type=[str, DeferredToolRequests]に
       - run_with_approvalを追加し、result.outputがDeferredToolRequestsの間、承認待ちの呼び出しごとにツール名と引数を表示して [y/N]を聞き、requests.build_results(approvals=...) とmessage_history=result.all_messages()を渡してrun_syncで再開する。usage=result.usageで承認前後の利用量を合算した
+  - 発展（a）：
+    - app/agent.pyのINSTRUCTIONSとapp/tools.pyのsearch_glossary・get_lecture_summary・make_quizをそのまま使い、エージェントを組み立てる部分だけを ADK で書いた（adk_agent/glossary_agent/agent.pyと __init__.py）。演習と同じ質問「LoRAとQLoRAの違いは？」を実行し、書き方と回答の違いを比べた
+
 - 結果：
   - 基礎：
 
@@ -77,6 +80,36 @@
   - 2回目の `requests=3` の内訳：1.検索を2つ呼ぶ 2.検索結果を見て save_learning_logを呼ぶ（ここで承認待ち）3.保存結果を見て回答を書く
   - 拒否（`n`）の場合は、保存されない
 
+- 発展（a）：
+  書き方の違い
+
+  | | 演習 | ADK |
+  | --- | --- | --- |
+  | 指示の渡し方 | `Agent(instructions=INSTRUCTIONS)` | `Agent(instruction=INSTRUCTIONS)`（引数名が単数形） |
+  | ツールの渡し方 | `agent.tool_plain(tools.search_glossary)` のように1つずつ登録 | `tools=[tools.search_glossary, ...]` とリストでまとめて渡す |
+  | ツールの説明文 | 関数の docstring と型ヒントから作られる | 同じく docstring と型ヒントから作られる |
+  | モデル | 実行するときに `run_sync(..., model=build_model())` で渡す | 組み立てるときに `model="gemini-3.5-flash-lite"` と文字列で書く |
+  | 名前 | 不要 | `name="glossary_agent"` が必要 |
+  | API キー | `GoogleProvider(api_key=get_api_key())` で自分で渡す | 環境変数 `GEMINI_API_KEY` を自動で読む |
+  | 動かし方 | 自分で書いた CLI（`python -m app.agent`） | `adk run` が `root_agent` という名前の変数を探して動かす |
+  | 会話 | 1回の質問で終わる | 対話を続けられる（会話の記録が `.adk/session.db` に保存される） |
+
+  同じ質問への回答の違い
+
+  それぞれ2回ずつの回答を比べた（演習の手順3と、基礎の変更前の2回。どちらも INSTRUCTIONS と docstring は変えていない）
+
+  | | 演習 1回目 | 演習 2回目 | ADK 1回目 | ADK 2回目 |
+  | --- | --- | --- | --- | --- |
+  | 書き出し | 「講座の用語集によると、LoRAとQLoRAの違いは以下のとおりです。」 | 1回目と同じ文 | 「LoRAとQLoRAの違いは、ベースモデルの重みをそのまま扱うか、量子化してメモリを節約するかにあります。」と要約から | 1回目と同じ文 |
+  | 説明の形 | LoRA・QLoRA を箇条書きで、定義に沿って説明 | 同じ | 同じ | 同じ。ただし短く、LoRA の説明から「PEFT」の語が抜けた |
+  | 用語集の定義に無い言葉 | 「Parameter-Efficient Fine-Tuning」 | なし | 「Parameter-Efficient Fine-Tuning」「Quantization」 | 「Quantization」 |
+  | 回答の最後 | 関係する回：第2回 | 関係する回：第2回 | 関係する回：第2回 | 関係する回：第2回 |
+
+  - 回答の中身はどちらも用語集の定義に沿っていて、最後に関係する回を示すところも4回とも同じだった
+  - 書き出しは、演習では、2回とも「講座の用語集によると、…以下のとおりです。」、ADK 版が2回とも同じ要約の一文で、道具ごとにそろっていた
+  - 用語集に無い英語の正式名は、演習でも1回目に出ていて、ADK だけの特徴ではなかった（「Quantization」は ADK 版の2回だけに出た）
+  - 2回ずつの実行なので、書き出しの違いが道具の違いによるものかは言い切れない。
+
 - 気づき・疑問：
   - 基礎：
     - 実験1では必ず検索の文を消したのにも関わらず、検索していた
@@ -95,3 +128,11 @@
     - 条件（承認が必要）だけ伝えると、モデルが自分なりに解釈して動き方を変えてしまう。伝えるなら、どう動けばよいか（そのまま呼ぶ）まで書くとよい
     - 疑問：
       - INSTRUCTIONSとdocstringの両方に同じような指示があるとき、モデルはどちらを強く見ているのか
+
+  - 発展（a）：
+    - ツールを関数として定義しておけば、フレームワークを変えても使いまわすことができる
+    - ADKでは会話の続きや保存、APIキーの読み込みを用意してくれる。演習で利用しているPydantic AIは自分で各部分が多いが、その分中身が見える
+    - 疑問：
+      - 回答の書き出しの違い
+        - ADKがモデルに送る際にYou are agent.You internal name is ... といった文を足していることが分かった。ADK自体が複数のエージェントを組み合わせることを想定しているため、エージェント名を渡すための一文が追加される。この一文が影響している可能性がある。
+      - 他にもフレームワークが足しているものはあるのか。
