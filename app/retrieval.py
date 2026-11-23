@@ -18,6 +18,7 @@ from app.config import (
     EMBEDDING_DIMENSIONS, EMBEDDING_MAX_TOKENS, EMBEDDING_MODEL,
     RAG_DB, RAG_DOCUMENT_IDS, RAG_SOURCE, RAG_TOP_K, RAG_TREE, get_api_key,
     RAG_GRAPH, GRAPH_START_K, GRAPH_HOPS, GRAPH_MAX_RESULTS,
+    RAG_NEIGHBORS, GRAPH_RERANK,
 )
 
 
@@ -124,18 +125,61 @@ def open_index(path: Path):
         db.close()
 
 
-def search(query: str) -> list[dict]:
-    """質問を埋め込み、近いページを最大RAG_TOP_K件返す。"""
+def search(query: str, vector: list[float] | None = None) -> list[dict]:
+    """質問を埋め込み、近いページを最大RAG_TOP_K件返す。
+    vectorを渡すと、埋め込み済みの質問ベクトルを使う"""
     if not isinstance(query, str) or not query.strip():
         raise ValueError("検索語が空です。")
     with open_index(RAG_DB) as db:
-        vector = embed_text(query.strip(), "RETRIEVAL_QUERY")
+        if vector is None:
+            vector = embed_text(query.strip(), "RETRIEVAL_QUERY")
         rows = db.execute("""
             SELECT page_id, document_id, lecture, document_title, section, title, page, content,
                    vec_distance_cosine(embedding, ?) AS distance
             FROM chunks ORDER BY distance, page_id LIMIT ?
         """, (sqlite_vec.serialize_float32(vector), RAG_TOP_K))
         return [dict(row) for row in rows]
+
+
+def add_neighbors(hits: list[dict], width: int = 1, pages: list[dict] | None = None) -> list[dict]:
+    pages =pages if pages is not None else load_pages(RAG_SOURCE)
+    order = {page["page_id"]:i for i, page in enumerate(pages)}
+    seen ={hit["page_id"] for hit in hits}
+    results = []
+    for hit in hits:
+        neighbors = []
+        i = order.get(hit["page_id"])
+        for offset in [*range(-width,0), *range(1,width + 1)]:
+            if i is None or not 0 <= i + offset < len(pages):
+                continue
+            page = pages[i + offset]
+            if page["document_id"] != hit["document_id"] or page["page_id"] in seen:
+                continue
+            seen.add(page["page_id"])
+            neighbors.append({"position": "前" if offset <0 else "後",
+                              **{key: page[key] for key in
+                                  ("page_id", "lecture", "section", "title", "page", "content")}})
+        results.append({**hit, "neighbors": neighbors})
+    return results
+
+
+def search_with_neighbors(query: str) -> list[dict]:
+    hits = search(query)
+    if RAG_NEIGHBORS <= 0:
+        return hits
+    return add_neighbors(hits, RAG_NEIGHBORS)
+
+
+def page_distances(vector: list[float], page_ids: list[str]) -> dict[str, float]:
+    if not page_ids:
+        return {}
+    with open_index(RAG_DB) as db:
+        marks = ",".join("?" * len(page_ids))
+        rows = db.execute(f"""
+            SELECT page_id, vec_distance_cosine(embedding, ?) AS distance
+            FROM chunks WHERE page_id IN ({marks})
+        """, (sqlite_vec.serialize_float32(vector), *page_ids))
+        return {row["page_id"]: row["distance"] for row in rows}        
 
 
 def search_graph(query: str) -> dict:
@@ -151,7 +195,9 @@ def search_graph(query: str) -> dict:
             adjacent[a].add(b)
             adjacent[b].add(a)
 
-    seeds = [hit for hit in search(query) if hit["page_id"] in pages][:min(GRAPH_START_K, GRAPH_MAX_RESULTS)]
+    vector = embed_text(query.strip(), "RETRIEVAL_QUERY") if GRAPH_RERANK and query.strip() else None
+    hits = search(query) if vector is None else search(query, vector=vector)
+    seeds = [hit for hit in hits if hit["page_id"] in pages][:min(GRAPH_START_K, GRAPH_MAX_RESULTS)]
     seed_ids = {seed["page_id"] for seed in seeds}
     results, candidates = [], {}
     for rank, seed in enumerate(seeds):
@@ -181,9 +227,13 @@ def search_graph(query: str) -> dict:
                 if neighbor not in candidates or priority < candidates[neighbor][0]:
                     candidates[neighbor] = (priority, candidate)
     expanded = [candidate for _, candidate in sorted(candidates.values())]
+    if vector is not None:
+        distances = page_distances(vector, [c["page_id"] for c in expanded])
+        for candidate in expanded:
+            candidate["distance"] = distances.get(candidate["page_id"], 2.0)
+        expanded.sort(key=lambda c: (c["distance"], c["hops"], c["page_id"]))
     return {"seeds": results, "expanded": expanded[:max(0, GRAPH_MAX_RESULTS - len(results))],
-            "max_hops": GRAPH_HOPS}
-
+            "max_hops": GRAPH_HOPS, "rerank": vector is not None}
 
 
 def run_full_context(agent, question: str, model, instructions: str, prompt_template: str):
@@ -201,11 +251,25 @@ def run_full_context(agent, question: str, model, instructions: str, prompt_temp
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="エージェントを使わず、講義資料の検索だけを実行する")
     parser.add_argument("query", help="調べたい内容")
+    parser.add_argument("--graph", action="store_true",help="Graphで取得するページの一覧だけを表示する（AIE_GRAPH_RERANK=1 で距離順）")
     args = parser.parse_args()
-    for i, result in enumerate(search(args.query), 1):
+    if args.graph:
+        found = search_graph(args.query)
+        print(f"[graph] 候補の選び方: {'質問との距離順' if found['rerank'] else '元の順（hop数・用語の出現数・ID）'}")
+        for label, items in (("入口", found["seeds"]), ("追加", found["expanded"])):
+            for item in items:
+                distance = f" 距離{item['distance']:.3f}" if "distance" in item else ""
+                route = " → ".join(step["title"] for step in item["path"][1:-1])
+                via = f"  経由: {route}" if route else ""
+                print(f"{label} {item['hops']}hop{distance}  第{item['lecture']}回 p.{item['page']} {item['title']}{via}")
+        raise SystemExit(0)
+
+    for i, result in enumerate(search_with_neighbors(args.query), 1):
         print(f"\n{'=' * 60}\n検索結果 {i}\n{'=' * 60}")
         print(f"講義: {result['document_title']}")
         print(f"章: {result['section']}")
         print(f"タイトル: {result['title']}")
         print(f"ページ: {result['page']}")
         print(f"\n{result['content']}")
+        for neighbor in result.get("neighbors", []):
+            print(f"\n [{neighbor['position']}のページとして追加] p.{neighbor['page']} {neighbor['title']}")
